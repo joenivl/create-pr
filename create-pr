@@ -1,0 +1,61 @@
+#!/bin/bash
+
+# Todo get some .envs
+
+# Define some vars
+base_branch="master"
+favro_placeholder="https://favro.com/organization/..."
+favro_url="https://favro.com/organization/e858a939b1604aebc56b22a4/9440f0a979a9bd8ce07f03a9?card=Zon-"
+cardId=false
+
+# Do we have a Favro branch?
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+current_branch=$(echo "$current_branch" | tr '[:lower:]' '[:upper:]')
+
+echo $current_branch
+
+ticket_regex="ZON-([0-9]+)"
+if [[ $current_branch =~ $ticket_regex ]]; then
+  cardId="Zon-${BASH_REMATCH[1]}"
+  favro_url="$favro_url${BASH_REMATCH[1]}"
+else
+  echo 'No valid branch found'
+  exit
+fi
+
+# Fetch card details
+response=$(curl -s GET "https://favro.com/api/v1/cards?cardSequentialId=$cardId" \
+    -H "organizationId: e858a939b1604aebc56b22a4" \
+    -u "jeroen.vanleeuwen@zonneplan.nl":"wAjmV0k9oIhZjFwFvxmVDG4SWNXkheqYMCWskyrCVqK")
+
+description=$(echo $response | jq .entities[0].detailedDescription | jq -Rsa .)
+
+# OpenAI
+secret="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"
+
+response=$(curl -s https://api.openai.com/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $secret" \
+  -d '{
+    "model": "gpt-3.5-turbo-1106",
+    "response_format": { "type": "text" },
+    "messages": [
+      {
+        "role": "system",
+        "content": "Je bent Nederlandstalig en je moet een ticket samenvatten in maximaal 100 karakters als text"
+      },
+      {
+        "role": "user",
+        "content": '"$description"'
+      }
+    ]
+  }')
+
+summary=$(echo $response | jq .choices[0].message.content -r)
+
+# Pull request template
+pull_request_template=$(cat ".github/PULL_REQUEST_TEMPLATE.md");
+
+PULL_REQUEST_TEMPLATE="${PULL_REQUEST_TEMPLATE/$FAVRO_PLACEHOLDER/$FAVRO_URL}"
+
+gh pr create -B $base_branch -b "$PULL_REQUEST_TEMPLATE" -w
