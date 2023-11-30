@@ -1,18 +1,18 @@
 #!/bin/bash
 
-# Todo get some .envs
+SCRIPT_PATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+
+source "${SCRIPT_PATH}/.env"
 
 # Define some vars
-base_branch="master"
 favro_placeholder="https://favro.com/organization/..."
-favro_url="https://favro.com/organization/e858a939b1604aebc56b22a4/9440f0a979a9bd8ce07f03a9?card=Zon-"
+favro_url="https://favro.com/organization/$FAVRO_ORGANIZATION_ID/$FAVRO_SPRINT_BOARD?card=Zon-"
+summary_placeholder="Beschrijf kort wat er in deze pull request aangetroffen wordt."
 cardId=false
 
 # Do we have a Favro branch?
-current_branch=$(git rev-parse --abbrev-ref HEAD)
+current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 current_branch=$(echo "$current_branch" | tr '[:lower:]' '[:upper:]')
-
-echo $current_branch
 
 ticket_regex="ZON-([0-9]+)"
 if [[ $current_branch =~ $ticket_regex ]]; then
@@ -23,39 +23,56 @@ else
   exit
 fi
 
-# Fetch card details
-response=$(curl -s GET "https://favro.com/api/v1/cards?cardSequentialId=$cardId" \
-    -H "organizationId: e858a939b1604aebc56b22a4" \
-    -u "jeroen.vanleeuwen@zonneplan.nl":"wAjmV0k9oIhZjFwFvxmVDG4SWNXkheqYMCWskyrCVqK")
+# Fetch card details or use git commit messages
+if ! ([ -z "$FAVRO_ORGANIZATION_ID" ] || [ -z "$FAVRO_API_USER" ] || [ -z "$FAVRO_API_TOKEN"]); then
+  response=$(curl -s GET "$FAVRO_API_URL/cards?cardSequentialId=$cardId" \
+      -H "organizationId: $FAVRO_ORGANIZATION_ID" \
+      -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
 
-description=$(echo $response | jq .entities[0].detailedDescription | jq -Rsa .)
+  title=$(echo $response | jq -r .entities[0].name)
+  title="$cardId - $title"
 
-# OpenAI
-secret="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"
+  description=$(echo $response | jq .entities[0].detailedDescription | jq -Rsa .)
+else
+  description=$(git log --pretty=format:"%s" origin/$GIT_BASE_BRANCH..HEAD | jq -Rsa .)
+fi
 
-response=$(curl -s https://api.openai.com/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $secret" \
-  -d '{
-    "model": "gpt-3.5-turbo-1106",
-    "response_format": { "type": "text" },
-    "messages": [
-      {
-        "role": "system",
-        "content": "Je bent Nederlandstalig en je moet een ticket samenvatten in maximaal 100 karakters als text"
-      },
-      {
-        "role": "user",
-        "content": '"$description"'
-      }
-    ]
-  }')
+# Fetch commit messages
+git fetch $GIT_REMOTE_NAME
 
-summary=$(echo $response | jq .choices[0].message.content -r)
+if ! [ -z "$OPEN_AI_API_URL" ] || [ -z "$OPEN_AI_API_TOKEN" ]; then
+  response=$(curl -s "$OPEN_AI_API_URL/chat/completions" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $OPEN_AI_API_TOKEN" \
+    -d '{
+      "model": "gpt-3.5-turbo-1106",
+      "response_format": { "type": "text" },
+      "messages": [
+        {
+          "role": "system",
+          "content": "Je bent Nederlandstalig en je moet een ticket samenvatten in maximaal 120 karakters als text. Patroon ZON-[0-9] graag negeren"
+        },
+        {
+          "role": "user",
+          "content": '"$description"'
+        }
+      ]
+    }')
+
+  summary=$(echo $response | jq -r .choices[0].message.content | tr -d '"')
+fi
 
 # Pull request template
-pull_request_template=$(cat ".github/PULL_REQUEST_TEMPLATE.md");
+pull_request_template=$(cat ".github/PULL_REQUEST_TEMPLATE.md" 2>/dev/null);
 
-PULL_REQUEST_TEMPLATE="${PULL_REQUEST_TEMPLATE/$FAVRO_PLACEHOLDER/$FAVRO_URL}"
+if [ -z "$pull_request_template" ]; then
+  pull_request_template=$(cat "$SCRIPT_PATH/.github/PULL_REQUEST_TEMPLATE.md");
+fi
 
-gh pr create -B $base_branch -b "$PULL_REQUEST_TEMPLATE" -w
+pull_request_template="${pull_request_template/$favro_placeholder/$favro_url}"
+
+if ! [ -z "$summary" ]; then
+  pull_request_template="${pull_request_template/$summary_placeholder/$summary}"
+fi
+
+gh pr create -B $GIT_BASE_BRANCH -t "$title" -b "$pull_request_template" -w
