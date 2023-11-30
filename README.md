@@ -17,7 +17,7 @@ Optional add create-pr to PATH.
 
 ### Configuration
 #### Favro
-Go to your Favro profile and create read only API token
+Go to your Favro profile and create read only API token. Use your Favro user account e-mail address as user
 
 #### OpenAI
 Go to https://platform.openai.com/api-keys and create an API key
