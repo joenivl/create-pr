@@ -24,7 +24,7 @@ else
 fi
 
 # Fetch card details or use git commit messages
-if ! ([ -z "$FAVRO_ORGANIZATION_ID" ] || [ -z "$FAVRO_API_USER" ] || [ -z "$FAVRO_API_TOKEN"]); then
+if [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN"]; then
   response=$(curl -s GET "$FAVRO_API_URL/cards?cardSequentialId=$cardId" \
       -H "organizationId: $FAVRO_ORGANIZATION_ID" \
       -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
@@ -40,7 +40,7 @@ fi
 # Fetch commit messages
 git fetch $GIT_REMOTE_NAME
 
-if ! [ -z "$OPEN_AI_API_URL" ] || [ -z "$OPEN_AI_API_TOKEN" ]; then
+if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
   response=$(curl -s "$OPEN_AI_API_URL/chat/completions" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $OPEN_AI_API_TOKEN" \
@@ -50,7 +50,7 @@ if ! [ -z "$OPEN_AI_API_URL" ] || [ -z "$OPEN_AI_API_TOKEN" ]; then
       "messages": [
         {
           "role": "system",
-          "content": "Je bent Nederlandstalig en je moet een ticket samenvatten in maximaal 120 karakters als text. Patroon ZON-[0-9] graag negeren"
+          "content": "Je bent Nederlandstalig en je moet een ticket samenvatten in maximaal 120 karakters als text en in het Nederlands. Patroon ZON-[0-9] graag negeren"
         },
         {
           "role": "user",
@@ -71,7 +71,7 @@ fi
 
 pull_request_template="${pull_request_template/$favro_placeholder/$favro_url}"
 
-if ! [ -z "$summary" ]; then
+if [ -n "$summary" ]; then
   pull_request_template="${pull_request_template/$summary_placeholder/$summary}"
 fi
 
