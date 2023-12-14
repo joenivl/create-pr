@@ -24,7 +24,7 @@ else
 fi
 
 # Fetch card details or use git commit messages
-if [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN"]; then
+if [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN" ]; then
   response=$(curl -s GET "$FAVRO_API_URL/cards?cardSequentialId=$cardId" \
       -H "organizationId: $FAVRO_ORGANIZATION_ID" \
       -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
