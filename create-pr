@@ -32,6 +32,8 @@ if [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_A
   title=$(echo $response | jq -r .entities[0].name)
   title="$cardId - $title"
 
+  cardCommonId=$(echo $response | jq -r .entities[0].cardCommonId)
+
   description=$(echo $response | jq .entities[0].detailedDescription | jq -Rsa .)
 else
   description=$(git log --pretty=format:"%s" origin/$GIT_BASE_BRANCH..HEAD | jq -Rsa .)
@@ -75,4 +77,22 @@ if [ -n "$summary" ]; then
   pull_request_template="${pull_request_template/$summary_placeholder/$summary}"
 fi
 
-gh pr create -B $GIT_BASE_BRANCH -t "$title" -b "$pull_request_template" -w
+# Create the pull request and capture the output
+output=$(gh pr create -B $GIT_BASE_BRANCH -t "$title" -b "$pull_request_template" 2>&1)
+
+echo $output;
+
+# Extract the URL using grep
+pr_url=$(echo "$output" | grep -o 'https://github\.com/[^ ]*')
+
+if [ -n "$pr_url" ] && [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN" ]; then
+  response=$(curl -s POST "$FAVRO_API_URL/comments" \
+      -d '{"comment": "PR: '$pr_url'", "cardCommonId": "'"$cardCommonId"'"}' \
+      -H "Content-Type: application/json" \
+      -H "organizationId: $FAVRO_ORGANIZATION_ID" \
+      -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
+
+    open -u "$pr_url"
+fi
+
+exit;
