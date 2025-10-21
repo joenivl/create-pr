@@ -10,7 +10,7 @@ favro_url="https://favro.com/organization/$FAVRO_ORGANIZATION_ID/$FAVRO_SPRINT_B
 summary_placeholder="Beschrijf kort wat er in deze pull request aangetroffen wordt."
 cardId=false
 
-# Do we have a Favro branch?
+# Try to find ticket number from branch name first
 current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 current_branch=$(echo "$current_branch" | tr '[:lower:]' '[:upper:]')
 
@@ -19,8 +19,28 @@ if [[ $current_branch =~ $ticket_regex ]]; then
   cardId="Zon-${BASH_REMATCH[1]}"
   favro_url="$favro_url${BASH_REMATCH[1]}"
 else
-  echo 'No valid branch found'
-  exit
+  # Branch doesn't contain ticket number, try latest commit
+  echo 'No ticket found in branch name, checking latest commit...'
+  latest_commit=$(git log --pretty=format:"%B" -1 | tr '[:lower:]' '[:upper:]')
+
+  if [[ $latest_commit =~ $ticket_regex ]]; then
+    cardId="Zon-${BASH_REMATCH[1]}"
+    favro_url="$favro_url${BASH_REMATCH[1]}"
+    echo "Found ticket $cardId in latest commit"
+  else
+    echo 'No valid ticket number found in branch or latest commit'
+    read -p "Please enter ticket number (format: ZON-1234): " user_input
+    user_input=$(echo "$user_input" | tr '[:lower:]' '[:upper:]')
+
+    if [[ $user_input =~ $ticket_regex ]]; then
+      cardId="Zon-${BASH_REMATCH[1]}"
+      favro_url="$favro_url${BASH_REMATCH[1]}"
+      echo "Using ticket $cardId"
+    else
+      echo "Invalid ticket number format. Expected format: ZON-1234"
+      exit
+    fi
+  fi
 fi
 
 # Fetch card details or use git commit messages
@@ -62,6 +82,7 @@ if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
     }')
 
   summary=$(echo $response | jq -r .choices[0].message.content | tr -d '"')
+  summary="# $cardId\n\n$summary"
 fi
 
 # Pull request template
@@ -74,16 +95,14 @@ fi
 pull_request_template="${pull_request_template/$favro_placeholder/$favro_url}"
 
 if [ -n "$summary" ]; then
-  pull_request_template="${pull_request_template/$summary_placeholder/$summary}"
+  pull_request_template=$(echo "$pull_request_template" | sed "s~${summary_placeholder}~${summary}~Ig")
 fi
 
-# Create the pull request and capture the output
-output=$(gh pr create -B $GIT_BASE_BRANCH -t "$title" -b "$pull_request_template" 2>&1)
+# Create the pull request interactively
+gh pr create -B $GIT_BASE_BRANCH --fill -b "$pull_request_template"
 
-echo $output;
-
-# Extract the URL using grep
-pr_url=$(echo "$output" | grep -o 'https://github\.com/[^ ]*')
+# Get the PR URL from the most recent PR on this branch
+pr_url=$(gh pr view --json url --jq .url 2>/dev/null)
 
 if [ -n "$pr_url" ] && [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN" ]; then
   response=$(curl -s POST "$FAVRO_API_URL/comments" \
