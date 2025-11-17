@@ -4,6 +4,12 @@ SCRIPT_PATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 
 source "${SCRIPT_PATH}/.env"
 
+# Check for test parameter
+TEST_MODE=false
+if [[ "$1" == "--test" ]] || [[ "$1" == "-t" ]]; then
+  TEST_MODE=true
+fi
+
 # Define some vars
 favro_placeholder="https://favro.com/organization/..."
 favro_url="https://favro.com/organization/$FAVRO_ORGANIZATION_ID/$FAVRO_SPRINT_BOARD?card=Zon-"
@@ -61,29 +67,38 @@ if [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_A
 
   cardCommonId=$(echo $response | jq -r .entities[0].cardCommonId)
 
-  description=$(echo $response | jq .entities[0].detailedDescription | jq -Rsa .)
+  description_raw=$(echo $response | jq -r .entities[0].detailedDescription)
+  description=$(echo "$description_raw" | jq -Rsa .)
 else
-  description=$(git log --pretty=format:"%s" origin/$GIT_BASE_BRANCH..HEAD | jq -Rsa .)
+  description_raw=$(git log --pretty=format:"%s" origin/$GIT_BASE_BRANCH..HEAD)
+  description=$(echo "$description_raw" | jq -Rsa .)
 fi
 
 # Fetch commit messages
 git fetch $GIT_REMOTE_NAME
 
 if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
+  # Get git diff changes
+  git_changes_raw=$(git diff origin/$GIT_BASE_BRANCH..HEAD)
+  
+  # Combine description and git changes
+  combined_content="Ticket beschrijving:\n$description_raw\n\nGit wijzigingen:\n$git_changes_raw"
+  combined_content_escaped=$(echo -e "$combined_content" | jq -Rsa .)
+  
   response=$(curl -s "$OPEN_AI_API_URL/chat/completions" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $OPEN_AI_API_TOKEN" \
     -d '{
-      "model": "gpt-3.5-turbo-1106",
+      "model": "gpt-5-nano-2025-08-07",
       "response_format": { "type": "text" },
       "messages": [
         {
           "role": "system",
-          "content": "Je bent Nederlandstalig en je moet een ticket samenvatten in maximaal 300 karakters als text en in het Nederlands. Patroon ZON-[0-9] graag negeren"
+          "content": "Je bent een Nederlandstalig Software Engineer en je moet een ticket samenvatten in maximaal 300 karakters als text en in het Nederlands. De input bevat de ticket beschrijving en de git wijzigingen. Geef kort aan wat er is gewijzigd. Patroon ZON-[0-9] graag negeren"
         },
         {
           "role": "user",
-          "content": '"$description"'
+          "content": '"$combined_content_escaped"'
         }
       ]
     }')
@@ -102,6 +117,27 @@ pull_request_template="${pull_request_template/$favro_placeholder/$favro_url}"
 
 if [ -n "$summary" ]; then
   pull_request_template=$(echo "$pull_request_template" | sed "s~${summary_placeholder}~${summary}~Ig")
+fi
+
+# Test mode: display PR data without creating
+if [ "$TEST_MODE" = true ]; then
+  echo "=== TEST MODE - PR will NOT be created ==="
+  echo ""
+  echo "PR Title:"
+  echo "$pr_title"
+  echo ""
+  echo "PR Body:"
+  echo "$pull_request_template"
+  echo ""
+  echo "Favro URL:"
+  echo "$favro_url"
+  echo ""
+  if [ -n "$summary" ]; then
+    echo "Summary:"
+    echo "$summary"
+    echo ""
+  fi
+  exit 0
 fi
 
 # Create the pull request interactively
