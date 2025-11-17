@@ -11,13 +11,18 @@ summary_placeholder="Beschrijf kort wat er in deze pull request aangetroffen wor
 cardId=false
 
 # Try to find ticket number from branch name first
-current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-current_branch=$(echo "$current_branch" | tr '[:lower:]' '[:upper:]')
+original_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+current_branch=$(echo "$original_branch" | tr '[:lower:]' '[:upper:]')
 
 ticket_regex="ZON-([0-9]+)"
 if [[ $current_branch =~ $ticket_regex ]]; then
   cardId="Zon-${BASH_REMATCH[1]}"
   favro_url="$favro_url${BASH_REMATCH[1]}"
+  
+  # Extract branch name part after ZON-XXXX- and replace dashes with spaces
+  # Remove everything up to and including ZON-XXXX- (case-insensitive)
+  branch_name_part=$(echo "$original_branch" | sed -E "s/.*[Zz][Oo][Nn]-[0-9]+-?//" | tr '-' ' ')
+  pr_title="$cardId: $branch_name_part"
 else
   # Branch doesn't contain ticket number, try latest commit
   echo 'No ticket found in branch name, checking latest commit...'
@@ -41,6 +46,11 @@ else
       exit
     fi
   fi
+  
+  # Extract branch name part after ZON-XXXX- and replace dashes with spaces
+  # Remove everything up to and including ZON-XXXX- (case-insensitive)
+  branch_name_part=$(echo "$original_branch" | sed -E "s/.*[Zz][Oo][Nn]-[0-9]+-?//" | tr '-' ' ')
+  pr_title="$cardId: $branch_name_part"
 fi
 
 # Fetch card details or use git commit messages
@@ -48,9 +58,6 @@ if [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_A
   response=$(curl -s GET "$FAVRO_API_URL/cards?cardSequentialId=$cardId" \
       -H "organizationId: $FAVRO_ORGANIZATION_ID" \
       -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
-
-  title=$(echo $response | jq -r .entities[0].name)
-  title="$cardId - $title"
 
   cardCommonId=$(echo $response | jq -r .entities[0].cardCommonId)
 
@@ -72,7 +79,7 @@ if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
       "messages": [
         {
           "role": "system",
-          "content": "Je bent Nederlandstalig en je moet een ticket samenvatten in maximaal 120 karakters als text en in het Nederlands. Patroon ZON-[0-9] graag negeren"
+          "content": "Je bent Nederlandstalig en je moet een ticket samenvatten in maximaal 300 karakters als text en in het Nederlands. Patroon ZON-[0-9] graag negeren"
         },
         {
           "role": "user",
@@ -82,7 +89,6 @@ if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
     }')
 
   summary=$(echo $response | jq -r .choices[0].message.content | tr -d '"')
-  summary="# $cardId\n\n$summary"
 fi
 
 # Pull request template
@@ -99,14 +105,14 @@ if [ -n "$summary" ]; then
 fi
 
 # Create the pull request interactively
-gh pr create -B $GIT_BASE_BRANCH --fill -b "$pull_request_template"
+gh pr create -B $GIT_BASE_BRANCH --fill -b "$pull_request_template" -t "$pr_title"
 
 # Get the PR URL from the most recent PR on this branch
 pr_url=$(gh pr view --json url --jq .url 2>/dev/null)
 
 if [ -n "$pr_url" ] && [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN" ]; then
   response=$(curl -s POST "$FAVRO_API_URL/comments" \
-      -d '{"comment": "PR: '$pr_url'", "cardCommonId": "'"$cardCommonId"'"}' \
+      -d '{"comment": "'$pr_url'", "cardCommonId": "'"$cardCommonId"'"}' \
       -H "Content-Type: application/json" \
       -H "organizationId: $FAVRO_ORGANIZATION_ID" \
       -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
