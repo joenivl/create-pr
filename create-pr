@@ -94,7 +94,7 @@ if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
       "messages": [
         {
           "role": "system",
-          "content": "Je bent een Nederlandstalig Software Engineer en je moet een ticket samenvatten in maximaal 300 karakters als text en in het Nederlands. De input bevat de ticket beschrijving en de git wijzigingen. Geef kort aan wat er is gewijzigd. Patroon ZON-[0-9] graag negeren"
+          "content": "Je bent een Nederlandstalig Software Engineer en je moet een ticket samenvatten in maximaal 500 karakters als text en in het Nederlands. De input bevat de ticket beschrijving en de git wijzigingen. Geef een korte, directe samenvatting in één zin over wat er is gedaan (bijvoorbeeld: Een command aangemaakt om de form_templates tabel te vullen van bestaande templates). Gebruik de git wijzigingen als backup als de ticket beschrijving niet duidelijk is maar ga uit van de ticket beschrijving. Geen structuur met Doel: of Reden:, geen opsomming van wijzigingen, alleen een (paar) simpele zin(nen). Patroon ZON-[0-9] graag negeren"
         },
         {
           "role": "user",
@@ -129,14 +129,6 @@ if [ "$TEST_MODE" = true ]; then
   echo "PR Body:"
   echo "$pull_request_template"
   echo ""
-  echo "Favro URL:"
-  echo "$favro_url"
-  echo ""
-  if [ -n "$summary" ]; then
-    echo "Summary:"
-    echo "$summary"
-    echo ""
-  fi
   exit 0
 fi
 
