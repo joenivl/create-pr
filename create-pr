@@ -4,11 +4,35 @@ SCRIPT_PATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 
 source "${SCRIPT_PATH}/.env"
 
-# Check for test parameter
+# Check for test parameter and base branch option
 TEST_MODE=false
-if [[ "$1" == "--test" ]] || [[ "$1" == "-t" ]]; then
-  TEST_MODE=true
-fi
+BASE_BRANCH=""
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --test|-t)
+      TEST_MODE=true
+      shift
+      ;;
+    --base|-b)
+      if [ -z "$2" ]; then
+        echo "Error: --base requires a branch name"
+        exit 1
+      fi
+      BASE_BRANCH="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: $0 [--test|-t] [--base|-b BRANCH]"
+      exit 1
+      ;;
+  esac
+done
+
+# Use BASE_BRANCH if set, otherwise fall back to GIT_BASE_BRANCH
+TARGET_BRANCH="${BASE_BRANCH:-$GIT_BASE_BRANCH}"
 
 # Define some vars
 favro_placeholder="https://favro.com/organization/..."
@@ -70,7 +94,7 @@ if [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_A
   description_raw=$(echo $response | jq -r .entities[0].detailedDescription)
   description=$(echo "$description_raw" | jq -Rsa .)
 else
-  description_raw=$(git log --pretty=format:"%s" origin/$GIT_BASE_BRANCH..HEAD)
+  description_raw=$(git log --pretty=format:"%s" origin/$TARGET_BRANCH..HEAD)
   description=$(echo "$description_raw" | jq -Rsa .)
 fi
 
@@ -79,7 +103,7 @@ git fetch $GIT_REMOTE_NAME
 
 if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
   # Get git diff changes
-  git_changes_raw=$(git diff origin/$GIT_BASE_BRANCH..HEAD)
+  git_changes_raw=$(git diff origin/$TARGET_BRANCH..HEAD)
   
   # Combine description and git changes
   combined_content="Ticket beschrijving:\n$description_raw\n\nGit wijzigingen:\n$git_changes_raw"
@@ -94,7 +118,7 @@ if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
       "messages": [
         {
           "role": "system",
-          "content": "Je bent een Nederlandstalig Software Engineer en je moet een ticket samenvatten in maximaal 500 karakters als text en in het Nederlands. De input bevat de ticket beschrijving en de git wijzigingen. Geef een korte, directe samenvatting in één zin over wat er is gedaan (bijvoorbeeld: Een command aangemaakt om de form_templates tabel te vullen van bestaande templates). Gebruik de git wijzigingen als backup als de ticket beschrijving niet duidelijk is maar ga uit van de ticket beschrijving. Geen structuur met Doel: of Reden:, geen opsomming van wijzigingen, alleen een (paar) simpele zin(nen). Patroon ZON-[0-9] graag negeren"
+          "content": "Je bent een Nederlandstalig Software Engineer en je moet een ticket samenvatten in maximaal 500 karakters als text en in het Nederlands. De input bevat de ticket beschrijving en de git wijzigingen. Geef een korte, directe samenvatting in één zin over wat er is gedaan (bijvoorbeeld: Een command aangemaakt om de form_templates tabel te vullen van bestaande templates). Gebruik de git wijzigingen als backup als de ticket beschrijving niet duidelijk is maar ga uit van de ticket beschrijving. Geen structuur met Doel: of Reden:, geen opsomming van wijzigingen, alleen een (paar) simpele zin(nen). Ga ervan uit de lezer al kennis heeft van het bestaande systeem. Patroon ZON-[0-9] graag negeren"
         },
         {
           "role": "user",
@@ -122,6 +146,8 @@ fi
 # Test mode: display PR data without creating
 if [ "$TEST_MODE" = true ]; then
   echo "=== TEST MODE - PR will NOT be created ==="
+  echo "Target Branch:"
+  echo "$TARGET_BRANCH"
   echo ""
   echo "PR Title:"
   echo "$pr_title"
@@ -133,7 +159,7 @@ if [ "$TEST_MODE" = true ]; then
 fi
 
 # Create the pull request interactively
-gh pr create -B $GIT_BASE_BRANCH --fill -b "$pull_request_template" -t "$pr_title"
+gh pr create -B $TARGET_BRANCH --fill -b "$pull_request_template" -t "$pr_title"
 
 # Get the PR URL from the most recent PR on this branch
 pr_url=$(gh pr view --json url --jq .url 2>/dev/null)
