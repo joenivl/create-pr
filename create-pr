@@ -7,6 +7,8 @@ source "${SCRIPT_PATH}/.env"
 # Check for test parameter and base branch option
 TEST_MODE=false
 BASE_BRANCH=""
+READY_TO_REVIEW=false
+MOVE_ONLY=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -23,9 +25,18 @@ while [[ $# -gt 0 ]]; do
       BASE_BRANCH="$2"
       shift 2
       ;;
+    --ready|-r)
+      READY_TO_REVIEW=true
+      shift
+      ;;
+    --move-only|-m)
+      MOVE_ONLY=true
+      READY_TO_REVIEW=true
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--test|-t] [--base|-b BRANCH]"
+      echo "Usage: $0 [--test|-t] [--base|-b BRANCH] [--ready|-r] [--move-only|-m]"
       exit 1
       ;;
   esac
@@ -84,12 +95,21 @@ else
 fi
 
 # Fetch card details or use git commit messages
+cardCommonId=""
+cardIdForUpdate=""
 if [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN" ]; then
-  response=$(curl -s GET "$FAVRO_API_URL/cards?cardSequentialId=$cardId" \
+  # Build query string with widgetCommonId if available
+  query_string="cardSequentialId=$cardId"
+  if [ -n "$FAVRO_SPRINT_BOARD_WIDGET_ID" ]; then
+    query_string="${query_string}&widgetCommonId=$FAVRO_SPRINT_BOARD_WIDGET_ID"
+  fi
+  
+  response=$(curl -s GET "$FAVRO_API_URL/cards?${query_string}" \
       -H "organizationId: $FAVRO_ORGANIZATION_ID" \
       -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
 
   cardCommonId=$(echo $response | jq -r .entities[0].cardCommonId)
+  cardIdForUpdate=$(echo $response | jq -r .entities[0].cardId)
 
   description_raw=$(echo $response | jq -r .entities[0].detailedDescription)
   description=$(echo "$description_raw" | jq -Rsa .)
@@ -98,80 +118,133 @@ else
   description=$(echo "$description_raw" | jq -Rsa .)
 fi
 
-# Fetch commit messages
-git fetch $GIT_REMOTE_NAME
+# Skip PR creation if move-only mode is enabled
+if [ "$MOVE_ONLY" = false ]; then
+  # Fetch commit messages
+  git fetch $GIT_REMOTE_NAME
 
-if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
-  # Get git diff changes
-  git_changes_raw=$(git diff origin/$TARGET_BRANCH..HEAD)
+  if [ -n "$OPEN_AI_API_URL" ] && [ -n "$OPEN_AI_API_TOKEN" ]; then
+    # Get git diff changes
+    git_changes_raw=$(git diff origin/$TARGET_BRANCH..HEAD)
+    
+    # Combine description and git changes
+    combined_content="Ticket beschrijving:\n$description_raw\n\nGit wijzigingen:\n$git_changes_raw"
+    combined_content_escaped=$(echo -e "$combined_content" | jq -Rsa .)
+    
+    response=$(curl -s "$OPEN_AI_API_URL/chat/completions" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $OPEN_AI_API_TOKEN" \
+      -d '{
+        "model": "gpt-5-nano-2025-08-07",
+        "response_format": { "type": "text" },
+        "messages": [
+          {
+            "role": "system",
+            "content": "Je bent een Nederlandstalig Software Engineer en je moet een ticket samenvatten in maximaal 500 karakters als text en in het Nederlands. De input bevat de ticket beschrijving en de git wijzigingen. Geef een korte, directe samenvatting in één zin over wat er is gedaan (bijvoorbeeld: Een command aangemaakt om de form_templates tabel te vullen van bestaande templates). Gebruik de git wijzigingen als backup als de ticket beschrijving niet duidelijk is maar ga uit van de ticket beschrijving. Geen structuur met Doel: of Reden:, geen opsomming van wijzigingen, alleen een (paar) simpele zin(nen). Ga ervan uit de lezer al kennis heeft van het bestaande systeem. Patroon ZON-[0-9] graag negeren"
+          },
+          {
+            "role": "user",
+            "content": '"$combined_content_escaped"'
+          }
+        ]
+      }')
+
+    summary=$(echo $response | jq -r .choices[0].message.content | tr -d '"')
+  fi
+
+  # Pull request template
+  pull_request_template=$(cat ".github/PULL_REQUEST_TEMPLATE.md" 2>/dev/null);
+
+  if [ -z "$pull_request_template" ]; then
+    pull_request_template=$(cat "$SCRIPT_PATH/.github/PULL_REQUEST_TEMPLATE.md");
+  fi
+
+  pull_request_template="${pull_request_template/$favro_placeholder/$favro_url}"
+
+  if [ -n "$summary" ]; then
+    pull_request_template=$(echo "$pull_request_template" | sed "s~${summary_placeholder}~${summary}~Ig")
+  fi
+
+  # Test mode: display PR data without creating
+  if [ "$TEST_MODE" = true ]; then
+    echo "=== TEST MODE - PR will NOT be created ==="
+    echo "Target Branch:"
+    echo "$TARGET_BRANCH"
+    echo ""
+    if [ "$READY_TO_REVIEW" = true ]; then
+      echo "Ready to Review: Enabled"
+      if [ -n "$cardIdForUpdate" ]; then
+        echo "Card ID for update: $cardIdForUpdate"
+      fi
+      echo ""
+    fi
+    if [ "$MOVE_ONLY" = true ]; then
+      echo "Move Only Mode: Enabled (PR creation will be skipped)"
+      echo ""
+    fi
+    echo "PR Title:"
+    echo "$pr_title"
+    echo ""
+    echo "PR Body:"
+    echo "$pull_request_template"
+    echo ""
+    exit 0
+  fi
+
+  # Create the pull request interactively
+  gh pr create -B $TARGET_BRANCH --fill -b "$pull_request_template" -t "$pr_title"
+
+  # Get the PR URL from the most recent PR on this branch
+  pr_url=$(gh pr view --json url --jq .url 2>/dev/null)
+
+  if [ -n "$pr_url" ] && [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN" ]; then
+    response=$(curl -s POST "$FAVRO_API_URL/comments" \
+        -d '{"comment": "'$pr_url'", "cardCommonId": "'"$cardCommonId"'"}' \
+        -H "Content-Type: application/json" \
+        -H "organizationId: $FAVRO_ORGANIZATION_ID" \
+        -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
+
+      open -u "$pr_url"
+  fi
+else
+  # Move-only mode: skip PR creation
+  if [ "$TEST_MODE" = true ]; then
+    echo "=== TEST MODE - Move Only Mode ==="
+    echo "PR creation will be skipped"
+    echo ""
+    if [ -n "$cardIdForUpdate" ]; then
+      echo "Card ID for update: $cardIdForUpdate"
+    else
+      echo "Warning: Card ID not found"
+    fi
+    echo ""
+    exit 0
+  fi
+  echo "Move-only mode: Skipping PR creation, moving card to ready to review..."
+fi
+
+# Update card to ready to review column if flag is set
+if [ "$READY_TO_REVIEW" = true ] && [ -n "$cardIdForUpdate" ] && [ -n "$FAVRO_READY_TO_REVIEW_COLUMN" ] && [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN" ] && [ -n "$FAVRO_SPRINT_BOARD_WIDGET_ID" ]; then
+  # Build update payload using jq for proper JSON formatting
+  update_payload=$(jq -n \
+    --arg columnId "$FAVRO_READY_TO_REVIEW_COLUMN" \
+    --arg widgetCommonId "$FAVRO_SPRINT_BOARD_WIDGET_ID" \
+    '{columnId: $columnId, widgetCommonId: $widgetCommonId}')
   
-  # Combine description and git changes
-  combined_content="Ticket beschrijving:\n$description_raw\n\nGit wijzigingen:\n$git_changes_raw"
-  combined_content_escaped=$(echo -e "$combined_content" | jq -Rsa .)
-  
-  response=$(curl -s "$OPEN_AI_API_URL/chat/completions" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $OPEN_AI_API_TOKEN" \
-    -d '{
-      "model": "gpt-5-nano-2025-08-07",
-      "response_format": { "type": "text" },
-      "messages": [
-        {
-          "role": "system",
-          "content": "Je bent een Nederlandstalig Software Engineer en je moet een ticket samenvatten in maximaal 500 karakters als text en in het Nederlands. De input bevat de ticket beschrijving en de git wijzigingen. Geef een korte, directe samenvatting in één zin over wat er is gedaan (bijvoorbeeld: Een command aangemaakt om de form_templates tabel te vullen van bestaande templates). Gebruik de git wijzigingen als backup als de ticket beschrijving niet duidelijk is maar ga uit van de ticket beschrijving. Geen structuur met Doel: of Reden:, geen opsomming van wijzigingen, alleen een (paar) simpele zin(nen). Ga ervan uit de lezer al kennis heeft van het bestaande systeem. Patroon ZON-[0-9] graag negeren"
-        },
-        {
-          "role": "user",
-          "content": '"$combined_content_escaped"'
-        }
-      ]
-    }')
-
-  summary=$(echo $response | jq -r .choices[0].message.content | tr -d '"')
-fi
-
-# Pull request template
-pull_request_template=$(cat ".github/PULL_REQUEST_TEMPLATE.md" 2>/dev/null);
-
-if [ -z "$pull_request_template" ]; then
-  pull_request_template=$(cat "$SCRIPT_PATH/.github/PULL_REQUEST_TEMPLATE.md");
-fi
-
-pull_request_template="${pull_request_template/$favro_placeholder/$favro_url}"
-
-if [ -n "$summary" ]; then
-  pull_request_template=$(echo "$pull_request_template" | sed "s~${summary_placeholder}~${summary}~Ig")
-fi
-
-# Test mode: display PR data without creating
-if [ "$TEST_MODE" = true ]; then
-  echo "=== TEST MODE - PR will NOT be created ==="
-  echo "Target Branch:"
-  echo "$TARGET_BRANCH"
-  echo ""
-  echo "PR Title:"
-  echo "$pr_title"
-  echo ""
-  echo "PR Body:"
-  echo "$pull_request_template"
-  echo ""
-  exit 0
-fi
-
-# Create the pull request interactively
-gh pr create -B $TARGET_BRANCH --fill -b "$pull_request_template" -t "$pr_title"
-
-# Get the PR URL from the most recent PR on this branch
-pr_url=$(gh pr view --json url --jq .url 2>/dev/null)
-
-if [ -n "$pr_url" ] && [ -n "$FAVRO_ORGANIZATION_ID" ] && [ -n "$FAVRO_API_USER" ] && [ -n "$FAVRO_API_TOKEN" ]; then
-  response=$(curl -s POST "$FAVRO_API_URL/comments" \
-      -d '{"comment": "'$pr_url'", "cardCommonId": "'"$cardCommonId"'"}' \
+  response=$(curl -s -X PUT "$FAVRO_API_URL/cards/$cardIdForUpdate" \
+      -d "$update_payload" \
       -H "Content-Type: application/json" \
       -H "organizationId: $FAVRO_ORGANIZATION_ID" \
       -u "$FAVRO_API_USER":"$FAVRO_API_TOKEN")
-
-    open -u "$pr_url"
+  
+  # Check if the update was successful
+  updated_card_id=$(echo $response | jq -r .cardId 2>/dev/null)
+  if [ -n "$updated_card_id" ] && [ "$updated_card_id" != "null" ]; then
+    echo "Card moved to ready to review column"
+  else
+    echo "Failed to move card to ready to review column"
+    echo "Response: $response"
+  fi
 fi
 
 exit;
