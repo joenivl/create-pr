@@ -22,3 +22,5 @@ Go to your Favro profile and create read only API token. Use your Favro user acc
 
 #### OpenAI
 Go to https://platform.openai.com/api-keys and create an API key
+
+Test
